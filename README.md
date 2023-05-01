@@ -3,9 +3,9 @@ Linear solvers for regularized problems involving dense scalar or vector fields
 
 ## Installation
 
-This package relies on `[jitfields](https://github.com/balbasty/jitfields)`
-and therefore on `[cppyy](https://github.com/wlav/cppyy)` and
-`[cupy](https://github.com/cupy/cupy)`. These dependencies -- and their
+This package relies on [`jitfields`](https://github.com/balbasty/jitfields)
+and therefore on [`cppyy`](https://github.com/wlav/cppyy) and
+[`cupy`](https://github.com/cupy/cupy). These dependencies -- and their
 interaction with pytorch -- are much more stable when installed using conda
 than pip. We advise first setting up the conda environment like this:
 ```shell
