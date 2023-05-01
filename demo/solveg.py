@@ -1,5 +1,5 @@
 import torch
-from nitorch_solvers.core.solvers import ConjugateGradient, MultiGrid, MultiGridCG
+from nitorch_solvers.core.fmg import ConjugateGradient, MultiGrid, MultiGridCG
 from nitorch_solvers.core.pyramid import ProlongFlow, RestrictFlow, Restrict
 from jitfields.regularisers import flow_forward, flow_precond, flow_relax_, flow_matvec
 from jitfields import pull

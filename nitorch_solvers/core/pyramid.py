@@ -1,4 +1,4 @@
-__all__ = ['Prolong', 'Restrict', 'GridProlong', 'GridRestrict']
+__all__ = ['Prolong', 'Restrict', 'ProlongFlow', 'RestrictFlow']
 
 import torch
 from jitfields.resize import resize, restrict
@@ -18,7 +18,7 @@ class Prolong:
         factor : [list of] int
             Prolongation factor
         order : [list of] int
-            Interplation order
+            Interpolation order
         bound : [list of] str
             Boundary conditions
         anchor : [list of] {'edge', 'center'}
@@ -51,13 +51,18 @@ class Prolong:
             x = torch.movedim(x, -1, -self.ndim-1)
             if out is not None:
                 out = torch.movedim(out, -1, -self.ndim-1)
+        trueout = None
         if out is not None:
             prm = dict(shape=out.shape[-self.ndim:])
+            if out.device != x.device:
+                trueout, out = out, out.to(x)
         else:
             prm = dict(factor=self.factor)
         out = resize(x, **prm, ndim=self.ndim,
                      order=self.order, bound=self.bound, anchor=self.anchor,
                      prefilter=False, out=out)
+        if trueout is not None:
+            out = trueout.copy_(out)
         if self.channel_last:
             out = torch.movedim(out, -self.ndim - 1, -1)
         return out
@@ -75,7 +80,7 @@ class ProlongFlow:
         factor : [list of] int
             Prolongation factor
         order : [list of] int
-            Interplation order
+            Interpolation order
         bound : [list of] str
             Boundary conditions
         anchor : [list of] {'edge', 'center'}
@@ -113,8 +118,11 @@ class ProlongFlow:
             Prolongated tensor
         """
         ndim = self.ndim
+        trueout = None
         if out is not None:
             prm = dict(shape=out.shape[-ndim-1:-1])
+            if out.device != x.device:
+                trueout, out = out, out.to(x)
         else:
             prm = dict(factor=self.factor)
         x = torch.movedim(x, -1, -ndim-1)
@@ -137,6 +145,8 @@ class ProlongFlow:
                 for dd in range(d+1, ndim):
                     out[..., c] *= scale[d] * scale[dd]
                     c += 1
+        if trueout is not None:
+            out = trueout.copy_(out)
         return out
 
 
@@ -186,13 +196,18 @@ class Restrict:
             x = torch.movedim(x, -1, -self.ndim-1)
             if out is not None:
                 out = torch.movedim(out, -1, -self.ndim-1)
+        trueout = None
         if out is not None:
             prm = dict(shape=out.shape[-self.ndim:])
+            if out.device != x.device:
+                trueout, out = out, out.to(x)
         else:
             prm = dict(factor=self.factor)
         out = restrict(x, **prm, ndim=self.ndim,
                        order=self.order, bound=self.bound, anchor=self.anchor,
                        out=out)
+        if trueout is not None:
+            out = trueout.copy_(out)
         if self.channel_last:
             out = torch.movedim(out, -self.ndim - 1, -1)
         return out
@@ -248,8 +263,11 @@ class RestrictFlow:
             Prolongated tensor
         """
         ndim = self.ndim
+        trueout = None
         if out is not None:
             prm = dict(shape=out.shape[-ndim-1:-1])
+            if out.device != x.device:
+                trueout, out = out, out.to(x)
         else:
             prm = dict(factor=self.factor)
         x = torch.movedim(x, -1, -ndim-1)
@@ -272,4 +290,6 @@ class RestrictFlow:
                 for dd in range(d+1, ndim):
                     out[..., c] *= scale[d] * scale[dd]
                     c += 1
+        if trueout is not None:
+            out = trueout.copy_(out)
         return out
