@@ -2,8 +2,8 @@ import torch
 from ..core.utils import make_vector
 from jitfields.sym import sym_solve, sym_solve_
 from jitfields.regularisers import (
-    field_vel2mom, field_diag,
-    grid_vel2mom, grid_diag,
+    field_matvec, field_diag,
+    flow_matvec, flow_diag,
 )
 
 

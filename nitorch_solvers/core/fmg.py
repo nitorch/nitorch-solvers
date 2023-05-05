@@ -202,10 +202,8 @@ class MultiGrid:
 
         # initial solve at coarsest resolution
         solve_[-1](x[-1])
-        import matplotlib.pyplot as plt
 
         for n_base in reversed(range(N-1)):
-
             prolong(x[n_base+1], x[n_base])
 
             for n_cycle in range(self.nb_cycles):

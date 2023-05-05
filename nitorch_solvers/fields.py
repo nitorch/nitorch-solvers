@@ -1,7 +1,17 @@
+__all__ = [
+    'field_solve_cg', 'field_solve_cg_',
+    'field_solve_fmg', 'field_solve_fmg_',
+    'field_solve_gs', 'field_solve_gs_',
+    'field_forward', 'field_penalty',
+]
 import torch
 from torch import Tensor
-from typing import Optional, Sequence, TypeVar
-from jitfields.regularisers import field_forward, field_precond, field_relax_
+from typing import Optional, Sequence, TypeVar, Union
+from functools import wraps
+from jitfields.regularisers import (
+    field_matvec, field_precond,
+    field_forward, field_relax_,
+)
 from jitfields.sym import sym_solve
 from .core.utils import expanded_shape, make_vector, ensure_list
 from .core.cg import ConjugateGradient
@@ -9,7 +19,11 @@ from .core.fmg import MultiGrid
 from .core.pyramid import Prolong,  Restrict
 
 T = TypeVar('T')
-OneOrSeveral = Sequence[T]
+OneOrSeveral = Union[T, Sequence[T]]
+
+
+# Alias for the regulariser's matrix-vector product
+field_penalty = wraps(field_matvec)
 
 
 def field_solve_cg(
@@ -153,21 +167,28 @@ def field_solve_cg_(
         Solution of the linear system, `x`.
 
     """
+    voxel_size = make_vector(voxel_size, ndim, dtype=torch.float, device='cpu')
+
     def dot(x, y):
         return (x * y).sum(list(range(-ndim - 1, 0)))
+
+    prm = dict(
+        absolute=absolute,
+        membrane=membrane,
+        bending=bending,
+        vx=voxel_size.tolist(),
+        bound=bound,
+        ndim=ndim,
+    )
 
     forward = FieldForward(
         hessian,
         weight,
-        absolute=absolute,
-        membrane=membrane,
-        bending=bending,
-        vx=voxel_size,
-        bound=bound,
+        **prm,
     )
 
     if precond == 'H + diag(L)':
-        precond = FieldPrecondFull(hessian)
+        precond = FieldPrecondFull(hessian, **prm)
     elif precond == 'H':
         precond = FieldPrecondH(hessian)
     elif precond == 'L':
@@ -198,7 +219,7 @@ def field_solve_fmg(
         nb_cycles: int = 2,
         nb_iter: OneOrSeveral[int] = 2,
 ) -> Tensor:
-    r"""Solve a regularized linear system involving vector fields by conjugate gradient
+    r"""Solve a regularized linear system involving vector fields by Full Multi-Grid
 
     Notes
     -----
@@ -275,7 +296,7 @@ def field_solve_fmg_(
         nb_cycles: int = 2,
         nb_iter: OneOrSeveral[int] = 2,
 ) -> Tensor:
-    r"""Solve a regularized linear system involving vector fields by conjugate gradient
+    r"""Solve a regularized linear system involving vector fields by Full Multi-Grid
 
     Notes
     -----
@@ -324,6 +345,7 @@ def field_solve_fmg_(
     restrict = Restrict(ndim, order=1, bound=bound, channel_last=True)
 
     prm = dict(
+        ndim=ndim,
         absolute=absolute,
         membrane=membrane,
         bending=bending,
@@ -376,11 +398,189 @@ def field_solve_fmg_(
     return init
 
 
+def field_solve_gs(
+        ndim: int,
+        hessian: Tensor,
+        gradient: Tensor,
+        init: Optional[Tensor] = None,
+        weight: Optional[Tensor] = None,
+        absolute: OneOrSeveral[float] = 0,
+        membrane: OneOrSeveral[float] = 0,
+        bending: OneOrSeveral[float] = 0,
+        voxel_size: OneOrSeveral[float] = 1,
+        bound: OneOrSeveral[str] = 'dft',
+        max_iter: int = 32,
+        tolerance: float = 1e-5,
+) -> Tensor:
+    r"""Solve a regularized linear system involving vector fields by Gauss-Seidel
+
+    Notes
+    -----
+    This function solves a system of the form `x = (H + L) \ g`,
+    where `H` is block-diagonal and `L` encodes a smoothness penalty.
+
+    Parameters
+    ----------
+    ndim : int
+        Number of spatial dimensions
+    hessian : (..., *spatial, CC) tensor
+        Block-diagonal matrix `H`, stored as a field of symmetric matrices.
+        DD is one of {1, C, C*(C+1)//2, C*c}
+    gradient :  (..., *spatial, C) tensor
+        Point at which to solve the system, `g`.
+    init : (..., *spatial, C) tensor, optional
+        Initial value
+    weight : (..., *spatial, 1|C) tensor, optional
+        Voxel-wise and channel-wise weight of the regularization
+    absolute : [list of] float, optional
+        Penalty on absolute values
+    membrane : [list of] float, optional
+        Penalty on first derivatives
+    bending : [list of] float, optional
+        Penalty on second derivatives
+    voxel_size : [list of] float, optional
+        Voxel size
+    bound : [list of] {'dft', 'dct1', 'dct2', 'dst1', 'dst2', 'replicate', 'zero'}, optional
+         Boundary conditions.
+    max_iter : int
+        Maximum number of iterations
+    tolerance : float
+        Tolerance for early stopping
+
+    Returns
+    -------
+    solution : (..., *spatial, C) tensor
+        Solution of the linear system, `x`.
+
+    """
+    batch_shape, spatial_shape, nc = _guess_shapes(ndim, hessian, gradient, weight)
+    if init is None:
+        init = gradient.new_zeros([*batch_shape, *spatial_shape, nc])
+    else:
+        init = init.expand([*batch_shape, *spatial_shape, nc]).clone()
+
+    return field_solve_gs_(
+        ndim,
+        init,
+        hessian=hessian,
+        gradient=gradient,
+        weight=weight,
+        absolute=absolute,
+        membrane=membrane,
+        bending=bending,
+        voxel_size=voxel_size,
+        bound=bound,
+        max_iter=max_iter,
+        tolerance=tolerance,
+    )
+
+
+def field_solve_gs_(
+        ndim: int,
+        init: Tensor,
+        hessian: Tensor,
+        gradient: Tensor,
+        weight: Optional[Tensor] = None,
+        absolute: OneOrSeveral[float] = 0,
+        membrane: OneOrSeveral[float] = 0,
+        bending: OneOrSeveral[float] = 0,
+        voxel_size: OneOrSeveral[float] = 1,
+        bound: OneOrSeveral[str] = 'dft',
+        max_iter: int = 32,
+        tolerance: float = 1e-5,
+) -> Tensor:
+    r"""Solve a regularized linear system involving vector fields by conjugate gradient
+
+    Notes
+    -----
+    This function solves a system of the form `x = (H + L) \ g`,
+    where `H` is block-diagonal and `L` encodes a smoothness penalty.
+
+    This function solves the system in-place
+
+    Parameters
+    ----------
+    ndim : int
+        Number of spatial dimensions
+    init : (..., *spatial, C) tensor
+        Initial value
+    hessian : (..., *spatial, CC) tensor
+        Block-diagonal matrix `H`, stored as a field of symmetric matrices.
+        CC is one of {1, C, C*(C+1)//2, C*C}
+    gradient :  (..., *spatial, C) tensor
+        Point at which to solve the system, `g`.
+    weight : (..., *spatial, 1|C) tensor, optional
+        Voxel-wise and channel-wise weight of the regularization
+    absolute : [list of] float, optional
+        Penalty on absolute values
+    membrane : [list of] float, optional
+        Penalty on first derivatives
+    bending : [list of] float, optional
+        Penalty on second derivatives
+    voxel_size : [list of] float, optional
+        Voxel size
+    bound : [list of] {'dft', 'dct1', 'dct2', 'dst1', 'dst2', 'replicate', 'zero'}, optional
+         Boundary conditions.
+    max_iter : int
+        Maximum number of iterations
+    tolerance : float
+        Tolerance for early stopping
+
+    Returns
+    -------
+    solution : (..., *spatial, C) tensor
+        Solution of the linear system, `x`.
+
+    """
+
+    prm = dict(
+        weight=weight,
+        absolute=absolute,
+        membrane=membrane,
+        bending=bending,
+        bound=bound,
+        voxel_size=voxel_size,
+    )
+
+    if tolerance == 0:
+        return field_relax_(init, hessian, gradient, nb_iter=max_iter, **prm)
+
+    # tolerance > 0: we must track the loss (much slower)
+    buf = torch.empty_like(init)
+
+    def get_loss(x):
+        Ax = field_forward(hessian, x, out=buf, **prm)
+        return Ax.sub_(gradient).square().mean()
+
+    def relax_(x):
+        return field_relax_(x, hessian, gradient, nb_iter=1, **prm)
+
+    loss_prev = get_loss(init)
+    for n_iter in range(max_iter):
+        init = relax_(init)
+        loss = get_loss(init)
+        if loss_prev - loss < tolerance:
+            break
+        loss_prev = loss
+
+    return init
+
+
 class FieldForward:
     """Forward pass `(H + L) @ x`"""
 
-    def __init__(self, h, w=None, vx=1, bound='dct2',
-                 absolute=0, membrane=0, bending=1):
+    def __init__(
+            self,
+            h: Tensor,
+            w: Optional[Tensor] = None,
+            vx: OneOrSeveral[float] = 1,
+            bound: OneOrSeveral[str] = 'dct2',
+            ndim: Optional[int] = None,
+            absolute: OneOrSeveral[float] = 0,
+            membrane: OneOrSeveral[float] = 0,
+            bending: OneOrSeveral[float] = 0,
+    ):
+        self.ndim = ndim or (h.ndim - 1)
         self.h = h
         self.w = w
         self.vx = vx
@@ -391,7 +591,7 @@ class FieldForward:
 
     def __call__(self, x, out=None):
         return field_forward(
-            self.h, x, self.w,
+            self.ndim, self.h, x, self.w,
             absolute=self.absolute,
             membrane=self.membrane,
             bending=self.bending,
@@ -403,8 +603,18 @@ class FieldForward:
 class FieldPrecondFull:
     """Block preconditioner `(H + diag(L)) \ x`"""
 
-    def __init__(self, h, w=None, vx=1, bound='dct2',
-                 absolute=0, membrane=0, bending=1):
+    def __init__(
+            self,
+            h: Tensor,
+            w: Optional[Tensor] = None,
+            vx: OneOrSeveral[float] = 1,
+            bound: OneOrSeveral[str] = 'dct2',
+            ndim: Optional[int] = None,
+            absolute: OneOrSeveral[float] = 0,
+            membrane: OneOrSeveral[float] = 0,
+            bending: OneOrSeveral[float] = 0,
+    ):
+        self.ndim = ndim or (h.ndim - 1)
         self.h = h
         self.w = w
         self.vx = vx
@@ -415,7 +625,7 @@ class FieldPrecondFull:
 
     def __call__(self, x, out=None):
         return field_precond(
-            self.h, x, self.w,
+            self.ndim, self.h, x, self.w,
             absolute=self.absolute,
             membrane=self.membrane,
             bending=self.bending,
@@ -437,8 +647,20 @@ class FieldPrecondH:
 class FieldRelax:
     """Gauss-Seidel solver"""
 
-    def __init__(self, h, g, w=None, vx=1, bound='dct2', nb_iter=4,
-                 absolute=0, membrane=0, bending=1):
+    def __init__(
+            self,
+            h: Tensor,
+            g: Tensor,
+            w: Optional[Tensor] = None,
+            vx: OneOrSeveral[float] = 1,
+            bound: OneOrSeveral[str] = 'dct2',
+            ndim: Optional[int] = None,
+            nb_iter: int = 4,
+            absolute: OneOrSeveral[float] = 0,
+            membrane: OneOrSeveral[float] = 0,
+            bending: OneOrSeveral[float] = 0,
+    ):
+        self.ndim = ndim or (h.ndim - 1)
         self.h = h
         self.g = g
         self.w = w
@@ -451,7 +673,7 @@ class FieldRelax:
 
     def __call__(self, x):
         return field_relax_(
-            x, self.h, self.g, self.w,
+            self.ndim, x, self.h, self.g, self.w,
             nb_iter=self.nb_iter,
             absolute=self.absolute,
             membrane=self.membrane,

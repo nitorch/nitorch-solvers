@@ -1,6 +1,6 @@
 import torch
 from nitorch_solvers.flows import flow_solve_cg, flow_solve_fmg
-from jitfields import pull
+from jitfields.pushpull import pull
 from jitfields.regularisers import flow_forward
 from math import cos, sin, pi
 import matplotlib
@@ -73,10 +73,10 @@ w[circle] = 1
 
 prm = dict(
     absolute=0,
-    membrane=0,
+    membrane=1,
     bending=0,
-    shears=1,
-    div=1,
+    shears=0,
+    div=0,
     bound='dct2',
 )
 
@@ -84,9 +84,9 @@ CG = False
 
 tic = time.time()
 if CG:
-    x = flow_solve_cg(h, g, weight=w, **prm, max_iter=32)
+    x = flow_solve_cg(h, g, weight=w, **prm, max_iter=2048, tolerance=0)
 else:
-    x = flow_solve_fmg(h, g, weight=w, **prm, nb_iter=4)
+    x = flow_solve_fmg(h, g, weight=w, **prm, nb_iter=128)
 if x.is_cuda:
     torch.cuda.synchronize(x.device)
 toc = time.time()

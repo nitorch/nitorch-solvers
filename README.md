@@ -156,7 +156,7 @@ def field_solve_fmg(
         nb_cycles: int = 2,
         nb_iter: OneOrSeveral[int] = 2,
 ) -> Tensor: ...
-r"""Solve a regularized linear system involving vector fields by conjugate gradient
+r"""Solve a regularized linear system involving vector fields by full multi-grid
 
 Notes
 -----
@@ -211,7 +211,7 @@ def field_solve_fmg_(
         nb_cycles: int = 2,
         nb_iter: OneOrSeveral[int] = 2,
 ) -> Tensor: ...
-r"""Solve a regularized linear system involving vector fields by conjugate gradient
+r"""Solve a regularized linear system involving vector fields by full multi-grid
 
 Notes
 -----

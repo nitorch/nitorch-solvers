@@ -1,14 +1,29 @@
+__all__ = [
+    'flow_solve_cg', 'flow_solve_cg_',
+    'flow_solve_fmg', 'flow_solve_fmg_',
+    'flow_solve_gs', 'flow_solve_gs_',
+    'flow_forward', 'flow_penalty',
+]
 import torch
 from torch import Tensor
-from typing import Optional, Sequence, TypeVar
-from jitfields.regularisers import flow_forward, flow_precond, flow_relax_
+from typing import Optional, Sequence, TypeVar, Union
+from functools import wraps
+from jitfields.regularisers import (
+    flow_matvec, flow_precond,
+    flow_forward, flow_relax_,
+)
 from jitfields.sym import sym_solve
 from .core.utils import expanded_shape, make_vector, ensure_list
 from .core.cg import ConjugateGradient
 from .core.fmg import MultiGrid
 from .core.pyramid import ProlongFlow, RestrictFlow, Restrict
+
 T = TypeVar('T')
-OneOrSeveral = Sequence[T]
+OneOrSeveral = Union[T, Sequence[T]]
+
+
+# Alias for the regulariser's matrix-vector product
+flow_penalty = wraps(flow_matvec)
 
 
 def flow_solve_cg(
@@ -177,7 +192,7 @@ def flow_solve_cg_(
         bound=bound,
     )
 
-    if precond == 'H + diag(L)':
+    if precond == 'H + diag(L)' or precond is True:
         precond = FlowPrecondFull(hessian)
     elif precond == 'H':
         precond = FlowPrecondH(hessian)
@@ -210,7 +225,7 @@ def flow_solve_fmg(
         nb_cycles: int = 2,
         nb_iter: OneOrSeveral[int] = 2,
 ) -> Tensor:
-    r"""Solve a regularized linear system involving flows by conjugate gradient
+    r"""Solve a regularized linear system involving flows by full multi-grid
 
     Notes
     -----
@@ -292,7 +307,7 @@ def flow_solve_fmg_(
         nb_cycles: int = 2,
         nb_iter: OneOrSeveral[int] = 2,
 ) -> Tensor:
-    r"""Solve a regularized linear system involving flows by conjugate gradient
+    r"""Solve a regularized linear system involving flows by full multi-grid
 
     Notes
     -----
@@ -396,6 +411,183 @@ def flow_solve_fmg_(
         prolong=prolong,
         restrict=restrict,
     ).solve_(init, gradients, forwards, solvers)
+    return init
+
+
+def flow_solve_gs(
+        hessian: Tensor,
+        gradient: Tensor,
+        init: Optional[Tensor] = None,
+        weight: Optional[Tensor] = None,
+        absolute: float = 0,
+        membrane: float = 0,
+        bending: float = 0,
+        shears: float = 0,
+        div: float = 0,
+        voxel_size: OneOrSeveral[float] = 1,
+        bound: OneOrSeveral[str] = 'dft',
+        max_iter: int = 32,
+        tolerance: float = 1e-5,
+) -> Tensor:
+    r"""Solve a regularized linear system involving flows by Gauss-Seidel
+
+    Notes
+    -----
+    This function solves a system of the form `x = (H + L) \ g`,
+    where `H` is block-diagonal and `L` encodes a smoothness penalty.
+
+    Parameters
+    ----------
+    hessian : (..., *spatial, DD) tensor
+        Block-diagonal matrix `H`, stored as a field of symmetric matrices.
+        DD is one of {1, D, D*(D+1)//2, D*D}
+    gradient :  (..., *spatial, D) tensor
+        Point at which to solve the system, `g`.
+    init : (..., *spatial, D) tensor, optional
+        Initial value
+    weight : (..., *spatial) tensor, optional
+        Voxel-wise weight of the regularization
+    absolute : float, optional
+        Penalty on absolute values
+    membrane : float, optional
+        Penalty on first derivatives
+    bending : float, optional
+        Penalty on second derivatives
+    shears : float, optional
+        Penalty on shears (symmetric part of the Jacobian)
+    div : float, optional
+        Penalty on the divergence (trace of the Jacobian)
+    voxel_size : [list of] float, optional
+        Voxel size
+    bound : [list of] {'dft', 'dct1', 'dct2', 'dst1', 'dst2', 'replicate', 'zero'}, optional
+         Boundary conditions.
+    max_iter : int
+        Maximum number of iterations
+    tolerance : float
+        Tolerance for early stopping
+
+    Returns
+    -------
+    solution : (..., *spatial, D) tensor
+        Solution of the linear system, `x`.
+
+    """
+    ndim = gradient.shape[-1]
+    batch_shape, spatial_shape = _guess_shapes(hessian, gradient, weight)
+    if init is None:
+        init = gradient.new_zeros([*batch_shape, *spatial_shape, ndim])
+    else:
+        init = init.expand([*batch_shape, *spatial_shape, ndim]).clone()
+
+    return flow_solve_gs_(
+        init,
+        hessian=hessian,
+        gradient=gradient,
+        weight=weight,
+        absolute=absolute,
+        membrane=membrane,
+        bending=bending,
+        shears=shears,
+        div=div,
+        voxel_size=voxel_size,
+        bound=bound,
+        max_iter=max_iter,
+        tolerance=tolerance,
+    )
+
+
+def flow_solve_gs_(
+        init: Tensor,
+        hessian: Tensor,
+        gradient: Tensor,
+        weight: Optional[Tensor] = None,
+        absolute: float = 0,
+        membrane: float = 0,
+        bending: float = 0,
+        shears: float = 0,
+        div: float = 0,
+        voxel_size: OneOrSeveral[float] = 1,
+        bound: OneOrSeveral[str] = 'dft',
+        max_iter: int = 32,
+        tolerance: float = 1e-5,
+) -> Tensor:
+    r"""Solve a regularized linear system involving flows by Gauss-Seidel
+
+    Notes
+    -----
+    This function solves a system of the form `x = (H + L) \ g`,
+    where `H` is block-diagonal and `L` encodes a smoothness penalty.
+
+    This function solves the system in-place
+
+    Parameters
+    ----------
+    init : (..., *spatial, D) tensor
+        Initial value
+    hessian : (..., *spatial, DD) tensor
+        Block-diagonal matrix `H`, stored as a field of symmetric matrices.
+        DD is one of {1, D, D*(D+1)//2, D*D}
+    gradient :  (..., *spatial, D) tensor
+        Point at which to solve the system, `g`.
+    weight : (..., *spatial) tensor, optional
+        Voxel-wise weight of the regularization
+    absolute : float, optional
+        Penalty on absolute values
+    membrane : float, optional
+        Penalty on first derivatives
+    bending : float, optional
+        Penalty on second derivatives
+    shears : float, optional
+        Penalty on shears (symmetric part of the Jacobian)
+    div : float, optional
+        Penalty on the divergence (trace of the Jacobian)
+    voxel_size : [list of] float, optional
+        Voxel size
+    bound : [list of] {'dft', 'dct1', 'dct2', 'dst1', 'dst2', 'replicate', 'zero'}, optional
+         Boundary conditions.
+    max_iter : int
+        Maximum number of iterations
+    tolerance : float
+        Tolerance for early stopping
+
+    Returns
+    -------
+    solution : (..., *spatial, D) tensor
+        Solution of the linear system, `x`.
+
+    """
+    prm = dict(
+        weight=weight,
+        absolute=absolute,
+        membrane=membrane,
+        bending=bending,
+        shears=shears,
+        div=div,
+        bound=bound,
+        voxel_size=voxel_size,
+    )
+
+    if tolerance == 0:
+        return flow_relax_(init, hessian, gradient, nb_iter=max_iter, **prm)
+
+    # tolerance > 0: we must track the loss (much slower)
+    buf = torch.empty_like(init)
+
+    def get_loss(x):
+        Ax = flow_forward(hessian, x, out=buf, **prm)
+        return Ax.sub_(gradient).square().mean()
+
+    def relax_(x):
+        return flow_relax_(x, hessian, gradient, nb_iter=1, **prm)
+
+    loss_prev = get_loss(init)
+    for n_iter in range(max_iter):
+        init = relax_(init)
+        loss = get_loss(init)
+        if loss_prev - loss < tolerance:
+            break
+        loss_prev = loss
+
     return init
 
 
