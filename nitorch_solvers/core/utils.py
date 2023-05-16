@@ -3,6 +3,7 @@ from types import GeneratorType as generator
 import torch
 import importlib
 import inspect
+import os
 T = TypeVar('T')
 
 
@@ -232,27 +233,23 @@ def make_vector(input, n=None, crop=True, *args,
 
 
 if 'indexing' in inspect.signature(torch.meshgrid).parameters:
-    @torch.jit.script
-    def meshgrid_script_ij(x: List[torch.Tensor]) -> List[torch.Tensor]:
-        return torch.meshgrid(x, indexing='ij')
-    @torch.jit.script
-    def meshgrid_script_xy(x: List[torch.Tensor]) -> List[torch.Tensor]:
-        return torch.meshgrid(x, indexing='xy')
     def meshgrid_ij(*x):
         return torch.meshgrid(*x, indexing='ij')
     def meshgrid_xy(*x):
         return torch.meshgrid(*x, indexing='xy')
+    if not int(os.environ.get('PYTORCH_JIT', '1')):
+        def meshgrid_script_ij(x: List[torch.Tensor]) -> List[torch.Tensor]:
+            return meshgrid_ij(*x)
+        def meshgrid_script_xy(x: List[torch.Tensor]) -> List[torch.Tensor]:
+            return meshgrid_xy(*x)
+    else:
+        @torch.jit.script
+        def meshgrid_script_ij(x: List[torch.Tensor]) -> List[torch.Tensor]:
+            return torch.meshgrid(x, indexing='ij')
+        @torch.jit.script
+        def meshgrid_script_xy(x: List[torch.Tensor]) -> List[torch.Tensor]:
+            return torch.meshgrid(x, indexing='xy')
 else:
-    @torch.jit.script
-    def meshgrid_script_ij(x: List[torch.Tensor]) -> List[torch.Tensor]:
-        return torch.meshgrid(x)
-    @torch.jit.script
-    def meshgrid_script_xy(x: List[torch.Tensor]) -> List[torch.Tensor]:
-        grid = torch.meshgrid(x)
-        if len(grid) > 1:
-            grid[0] = grid[0].transpose(0, 1)
-            grid[1] = grid[1].transpose(0, 1)
-        return grid
     def meshgrid_ij(*x):
         return torch.meshgrid(*x)
     def meshgrid_xy(*x):
@@ -261,6 +258,22 @@ else:
             grid[0] = grid[0].transpose(0, 1)
             grid[1] = grid[1].transpose(0, 1)
         return grid
+    if not int(os.environ.get('PYTORCH_JIT', '1')):
+        def meshgrid_script_ij(x: List[torch.Tensor]) -> List[torch.Tensor]:
+            return meshgrid_ij(*x)
+        def meshgrid_script_xy(x: List[torch.Tensor]) -> List[torch.Tensor]:
+            return meshgrid_xy(*x)
+    else:
+        @torch.jit.script
+        def meshgrid_script_ij(x: List[torch.Tensor]) -> List[torch.Tensor]:
+            return torch.meshgrid(x)
+        @torch.jit.script
+        def meshgrid_script_xy(x: List[torch.Tensor]) -> List[torch.Tensor]:
+            grid = torch.meshgrid(x)
+            if len(grid) > 1:
+                grid[0] = grid[0].transpose(0, 1)
+                grid[1] = grid[1].transpose(0, 1)
+            return grid
 
 
 def identity_grid(shape, dtype=None, device=None):
