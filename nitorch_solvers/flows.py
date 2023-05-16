@@ -23,7 +23,7 @@ OneOrSeveral = Union[T, Sequence[T]]
 
 
 # Alias for the regulariser's matrix-vector product
-flow_penalty = wraps(flow_matvec)
+flow_penalty = wraps(flow_matvec)(flow_matvec)
 
 
 def flow_solve_cg(
